@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Interactive PDF Grid Selector</title>
+  <style>
+    body { font-family: Arial, sans-serif; }
+    canvas { border: 1px solid #ccc; }
+    #controls { margin-top: 10px; }
+  </style>
+</head>
+<body>
+  <h2>Select Grid Areas on PDF</h2>
+  <canvas id="pdf-canvas" width="600" height="800"></canvas>
+  <div id="controls">
+    <button id="submit">Submit Selection</button>
+  </div>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.min.js"></script>
+  <script>
+    const url = '/static/sample.pdf';  // Your PDF path
+    const canvas = document.getElementById('pdf-canvas');
+    const ctx = canvas.getContext('2d');
+    const rects = [];
+    let pdfDoc = null, page = null;
+    let isDrawing = false, startX = 0, startY = 0;
+
+    pdfjsLib.getDocument(url).promise.then(doc => {
+      pdfDoc = doc;
+      return doc.getPage(1);
+    }).then(p => {
+      page = p;
+      const viewport = page.getViewport({ scale: 1.5 });
+      canvas.width = viewport.width;
+      canvas.height = viewport.height;
+      page.render({ canvasContext: ctx, viewport });
+    });
+
+    canvas.addEventListener('mousedown', e => {
+      startX = e.offsetX;
+      startY = e.offsetY;
+      isDrawing = true;
+    });
+
+    canvas.addEventListener('mouseup', e => {
+      if (!isDrawing) return;
+      const endX = e.offsetX;
+      const endY = e.offsetY;
+      const rect = {
+        x: Math.min(startX, endX),
+        y: Math.min(startY, endY),
+        width: Math.abs(startX - endX),
+        height: Math.abs(startY - endY)
+      };
+      rects.push(rect);
+      ctx.strokeStyle = 'red';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(rect.x, rect.y, rect.width, rect.height);
+      isDrawing = false;
+    });
+
+    document.getElementById('submit').addEventListener('click', () => {
+      fetch('/extract', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rects })
+      })
+      .then(res => res.json())
+      .then(data => {
+        alert('Extracted text:\n' + data.text.join('\n---\n'));
+      });
+    });
+  </script>
+</body>
+</html>

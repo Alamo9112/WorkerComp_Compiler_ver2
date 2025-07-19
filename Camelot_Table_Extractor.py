@@ -1,127 +1,171 @@
-#!/usr/bin/env python3
-"""
-camelot_table_extractor.py
-
-Standalone script to extract tables from a PDF using Camelot.
-
-Before you run:
-  1. Confirm your Python environment:
-       python3 --version
-       python3 -m pip --version
-  2. Remove any conflicting package:
-       python3 -m pip uninstall camelot
-       # If you're using Conda:
-       conda list | grep camelot
-       conda remove camelot
-  3. Install Camelot with OpenCV support:
-       python3 -m pip install "camelot-py[cv]"
-       # Or via Conda-forge:
-       conda install -c conda-forge camelot-py
-  4. Verify the correct module is found:
-       python3 -c "import camelot; print('Loaded from:', getattr(camelot, '__file__', camelot.__path__))"
-       python3 -c "python3 - << 'EOF'\nfrom camelot.io import read_pdf; print('read_pdf available at', read_pdf)\nEOF"
-
-Usage:
-  python3 camelot_table_extractor.py <PDF_PATH> [--flavor lattice|stream] [--pages PAGES]
-      [--areas x1,y1,x2,y2 [...]] [--output-csv]
-
-Example:
-  python3 camelot_table_extractor.py WorkersData_Week7.pdf \
-      --flavor lattice --pages all \
-      --areas 50,100,500,700 --output-csv
-"""
-import sys
 import argparse
+import matplotlib.pyplot as plt
+import matplotlib.patches as patches
+from collections import defaultdict
+from dataclasses import dataclass
+from typing import List, Dict
 
-# 1) Import the base module for debugging
 try:
-    import camelot
-    location = getattr(camelot, '__file__', camelot.__path__)
-    print(f"[DEBUG] camelot loaded from: {location}")
-    print(f"[DEBUG] camelot contents: {dir(camelot)}")
-except ImportError:
-    sys.exit(
-        "Error: 'camelot' module not found in this environment.\n"
-        "Ensure you installed the correct package: python3 -m pip install 'camelot-py[cv]'"
-    )
+    import pdfplumber
+except ImportError:  # pragma: no cover - pdfplumber may not be installed
+    pdfplumber = None  # type: ignore
 
-# 2) Import read_pdf directly
 try:
-    from camelot.io import read_pdf
-    print(f"[DEBUG] read_pdf imported successfully: {read_pdf}")
-except ImportError:
-    sys.exit(
-        "Error: Could not import read_pdf from camelot.io.\n"
-        "This usually means a conflicting 'camelot' package is installed.\n"
-        "Remove it and reinstall: python3 -m pip uninstall camelot && python3 -m pip install 'camelot-py[cv]'"
-    )
+    import pandas as pd
+except ImportError:  # pragma: no cover - pandas may not be installed
+    pd = None  # type: ignore
+
+try:
+    from openpyxl import Workbook
+except ImportError:  # pragma: no cover - openpyxl may not be installed
+    Workbook = None  # type: ignore
+
+@dataclass
+class EmployeeRecord:
+    employee_code: str
+    work_code: str
+    regular_pay: float = 0.0
+    overtime_pay: float = 0.0
+    overtime_hours: float = 0.0
+
+    @property
+    def total_pay(self) -> float:
+        return self.regular_pay + self.overtime_pay
 
 
-def extract_tables(pdf_path, flavor='lattice', pages='all', table_areas=None, output_csv=False):
+def parse_pdf(path: str) -> List[Dict[str, str]]:
+    """Parse a PDF file and return a list of row dicts.
+
+    This function expects the PDF to contain a table where the first row is the
+    header. Columns should include at least ``Name`` and ``Pay Type`` along with
+    ``Hours`` and ``Amount``. Additional columns are ignored.
     """
-    Extract tables from a PDF using camelot.io.read_pdf.
-    Retries in stream mode if lattice mode finds nothing.
+    if pdfplumber is None:
+        raise RuntimeError("pdfplumber is required to parse PDF files")
 
-    Args:
-        pdf_path (str): path to PDF.
-        flavor (str): 'lattice' or 'stream'.
-        pages (str): pages to parse.
-        table_areas (list): optional list of 'x1,y1,x2,y2'.
-        output_csv (bool): if True, save each table as CSV.
-    """
-    options = {'flavor': flavor, 'pages': pages}
-    if table_areas:
-        options['table_areas'] = table_areas
-
-    print(f"Extracting tables from {pdf_path} (flavor={flavor}, pages={pages})...")
-    try:
-        tables = read_pdf(pdf_path, **options)
-    except Exception as e:
-        sys.exit(f"Error reading PDF: {e}")
-
-    # Fallback: lattice -> stream if no tables found
-    n = getattr(tables, 'n', len(tables))
-    if n == 0 and flavor == 'lattice':
-        print("No tables found in lattice mode — retrying with stream mode...")
-        return extract_tables(pdf_path, flavor='stream', pages=pages,
-                              table_areas=table_areas, output_csv=output_csv)
-
-    print(f"Found {n} table(s) using {flavor} mode.")
-    for i, table in enumerate(tables, start=1):
-        print(f"\n-- Table {i} --")
-        df = table.df
-        print(df)
-        if output_csv:
-            csv_name = f"table_{i}_{flavor}.csv"
-            table.to_csv(csv_name)
-            print(f"Saved CSV: {csv_name}")
-    return tables
+    rows: List[Dict[str, str]] = []
+    with pdfplumber.open(path) as pdf:
+        for page in pdf.pages:
+            table = page.extract_table()
+            if not table:
+                continue
+            headers = [h.strip() if h else "" for h in table[0]]
+            for line in table[1:]:
+                row = {headers[i]: (line[i] or "").strip() for i in range(len(headers))}
+                rows.append(row)
+    return rows
 
 
-def main():
-    parser = argparse.ArgumentParser(
-        description='Extract tables from a PDF using Camelot.'
-    )
-    parser.add_argument('pdf', help='Path to the PDF file')
-    parser.add_argument('-f', '--flavor', choices=['lattice', 'stream'], default='lattice',
-                        help="Extraction mode: 'lattice' (grid lines) or 'stream' (whitespace)")
-    parser.add_argument('-p', '--pages', default='all',
-                        help="Pages to parse (e.g. '1,2-3' or 'all')")
-    parser.add_argument('-a', '--areas', nargs='+',
-                        metavar='x1,y1,x2,y2',
-                        help="Optional: restrict extraction to these regions")
-    parser.add_argument('-o', '--output-csv', action='store_true',
-                        help='Save each extracted table as CSV')
+def compile_records(rows: List[Dict[str, str]]) -> Dict[str, EmployeeRecord]:
+    """Compile raw rows into per employee records."""
+    employees: Dict[str, EmployeeRecord] = defaultdict(lambda: EmployeeRecord("", ""))
+    for row in rows:
+        name = row.get("Name") or row.get("Employee") or row.get("Employee Name")
+        if not name:
+            continue
+        record = employees[name]
+        if not record.employee_code:
+            record.employee_code = row.get("Employee Code", "")
+        if not record.work_code:
+            record.work_code = row.get("Work Code", "")
+
+        pay_type = (row.get("Pay Type") or "").lower()
+        hours = float(row.get("Hours", 0) or 0)
+        amount = float(row.get("Amount", 0) or 0)
+        if "ot" in pay_type or "overtime" in pay_type:
+            record.overtime_hours += hours
+            record.overtime_pay += amount
+        else:
+            record.regular_pay += amount
+    return employees
+
+
+def write_excel(records: Dict[str, EmployeeRecord], path: str) -> None:
+    """Write compiled records to an Excel file."""
+    if pd is not None:
+        data = [
+            {
+                "Name": name,
+                "Employee Code": rec.employee_code,
+                "Work Code": rec.work_code,
+                "Pay": rec.total_pay,
+                "OT Hours": rec.overtime_hours,
+                "Tips": 0,
+            }
+            for name, rec in records.items()
+        ]
+        df = pd.DataFrame(data)
+        df.to_excel(path, index=False)
+        return
+
+    if Workbook is None:
+        raise RuntimeError(
+            "openpyxl or pandas is required to write Excel output"
+        )
+
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["Name", "Employee Code", "Work Code", "Pay", "OT Hours", "Tips"])
+    for name, rec in records.items():
+        ws.append([
+            name,
+            rec.employee_code,
+            rec.work_code,
+            rec.total_pay,
+            rec.overtime_hours,
+            0,
+        ])
+    wb.save(path)
+
+def show_pdf_with_grid(pdf_path: str, page_num: int = 0, rows: int = 4, cols: int = 4):
+    if pdfplumber is None:
+        raise RuntimeError("pdfplumber is required for this feature")
+
+    with pdfplumber.open(pdf_path) as pdf:
+        page = pdf.pages[page_num]
+        im = page.to_image(resolution=150)
+
+        fig, ax = plt.subplots(figsize=(10, 14))
+        ax.imshow(im.original)
+
+        width, height = page.width, page.height
+        col_width = width / cols
+        row_height = height / rows
+
+        for i in range(1, cols):
+            ax.add_line(plt.Line2D([i * col_width, i * col_width], [0, height], color='red', linewidth=1))
+        for j in range(1, rows):
+            ax.add_line(plt.Line2D([0, width], [j * row_height, j * row_height], color='red', linewidth=1))
+
+        for r in range(rows):
+            for c in range(cols):
+                x0 = c * col_width
+                y0 = r * row_height
+                x1 = x0 + col_width
+                y1 = y0 + row_height
+                bbox = (x0, y0, x1, y1)
+                text = page.within_bbox(bbox).extract_text() or ""
+                print(f"Cell ({r+1},{c+1}):", repr(text.strip()))
+                rect = patches.Rectangle((x0, y0), col_width, row_height,
+                                         linewidth=1, edgecolor='blue', facecolor='none')
+                ax.add_patch(rect)
+
+        ax.set_xlim(0, width)
+        ax.set_ylim(height, 0)
+        plt.title(f"Grid Overlay ({rows}x{cols}) on Page {page_num + 1}")
+        plt.axis("off")
+        plt.show()
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Compile employee register PDF into Excel")
+    parser.add_argument("pdf", help="Input PDF file")
+    parser.add_argument("output", help="Output Excel file (.xlsx)")
     args = parser.parse_args()
 
-    extract_tables(
-        pdf_path=args.pdf,
-        flavor=args.flavor,
-        pages=args.pages,
-        table_areas=args.areas,
-        output_csv=args.output_csv
-    )
+    rows = parse_pdf(args.pdf)
+    records = compile_records(rows)
+    write_excel(records, args.output)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
